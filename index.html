@@ -2099,6 +2099,10 @@
       grid-template-columns: repeat(4, 1fr);
       gap: 28px;
       padding: 120px 60px 60px;
+      /* 移动端硬件加速：为整个网格容器预留合成层，滑动时子卡片 transform 更新不触发重绘 */
+      will-change: transform;
+      transform: translateZ(0);
+      -webkit-overflow-scrolling: touch;
       /* 网格宽度 = 4卡片 + 3间距 + 左右padding，确保至少 2 个屏幕宽高的内容量
          由 JS 设置 width/height 以确保无限循环 */
     }
@@ -2150,23 +2154,42 @@
       opacity: 1;
       transform: scale(1.15);
     }
-    /* 彩色渐变兜底层（图片加载失败时作为备用视觉） */
+    /* 彩色渐变兜底层（图片加载失败时作为备用视觉）+ 骨架屏微光占位 */
     .ppt-card-bg {
       position: absolute; inset: 0;
       z-index: 1;
     }
-    /* 图片层：object-fit: cover 保证 16:9 填满；transition 让失败透明渐变平滑 */
+    /* 骨架屏：图片加载期间微光扫过，onLoad/onError 后由 .img-done 关闭动画（避免常驻耗电） */
+    .ppt-card-bg::after {
+      content: '';
+      position: absolute; inset: 0;
+      background: linear-gradient(100deg, transparent 32%, rgba(255, 255, 255, 0.14) 50%, transparent 68%);
+      transform: translateX(-100%);
+      animation: ppt-shimmer 1.6s ease-in-out infinite;
+      pointer-events: none;
+    }
+    .ppt-card.img-done .ppt-card-bg::after {
+      animation: none;
+      opacity: 0;
+    }
+    @keyframes ppt-shimmer {
+      to { transform: translateX(100%); }
+    }
+    /* 图片层：object-fit: cover 保证 16:9 填满；加载完成前保持透明（显示骨架屏），onLoad 后淡入 */
     .ppt-card-img {
       position: absolute; inset: 0;
       width: 100%; height: 100%;
       object-fit: cover;
       z-index: 2;
+      opacity: 0;                    /* 初始透明：配合懒加载，加载完成才显示，避免黑块/空白 */
       transition: transform 0.6s cubic-bezier(0.25, 0.46, 0.45, 0.94),
-                  opacity 0.3s ease;
+                  opacity 0.45s ease;
       display: block;
       will-change: transform;
       transform: translateZ(0);  /* GPU 合成层提升，减少移动端滚动时的重绘 */
+      pointer-events: none;      /* 触摸拖拽事件统一交给卡片容器处理 */
     }
+    .ppt-card-img.is-loaded { opacity: 1; }   /* IntersectionObserver 赋 src → onLoad → 淡入 */
     .ppt-card:hover .ppt-card-img {
       transform: scale(1.08);
     }
@@ -3358,6 +3381,14 @@
       const dims = useRef({ cardW: 320, cardH: 180, gap: 28, cols: 4, rows: 4, paddingX: 60, paddingY: 120 });
       // rAF 帧号
       const rafRef = useRef(0);
+      // PPT 图片懒加载观察器（画布打开时创建，关闭时断开）
+      const lazyIORef = useRef(null);
+      // 图片加载队列：限制并发数，避免打开画布瞬间 16 张大图挤爆移动端带宽
+      const loadQueueRef = useRef({ active: 0, pending: [] });
+      // 移动端友好的最大并发加载数（4 张一波，视野中心的图优先）
+      const MAX_IMG_PARALLEL = 4;
+      // 脏检查：记录上一帧已应用的镜头偏移，镜头无位移时跳过 16 张卡片的样式写入（移动端省 CPU/电量）
+      const tickPrev = useRef({ x: 0, y: 0 });
       const wheelAcc = useRef({ x: 0, y: 0 });
       // 统一指针状态：兼容鼠标 + 触摸（拖拽惯性 + 点击vs拖拽判定）
       const pointerState = useRef({ active: false, startX: 0, startY: 0, lastX: 0, lastY: 0, vx: 0, vy: 0, isDragging: false });
@@ -3500,6 +3531,7 @@
         // 绑定滚轮与 rAF 循环
         wheelAcc.current = { x: 0, y: 0 };
         cam.current = { x: 0, y: 0 };
+        tickPrev.current = { x: 0, y: 0 };
         pointerState.current = { active: false, startX: 0, startY: 0, lastX: 0, lastY: 0, vx: 0, vy: 0, isDragging: false };
         // 统一指针事件：touch + mouse 都走 onPointerDown/Move/Up
         stageRef.current.addEventListener('wheel', onWheel, { passive: false });
@@ -3511,7 +3543,71 @@
         document.addEventListener('mousemove', onPointerMove);
         document.addEventListener('mouseup', onPointerUp);
         window.addEventListener('resize', onResize);
+        // —— 懒加载：只有卡片临近视口时才真正加载图片（IntersectionObserver 按需加载）——
+        setupLazyImages();
         rafRef.current = requestAnimationFrame(tick);
+      };
+
+      // ========== 3.1 PPT 图片懒加载：IntersectionObserver 视口判定 + 并发限制加载队列 ==========
+      // 卡片由 JS 动态定位（transform 无限循环），原生 loading="lazy" 对 transform 移动的元素
+      // 判定不可靠 → 用 IO 以画布舞台为根监听；但手机端「视口+预载边距」往往覆盖整个 4×4 网格，
+      // 单靠 IO 依然会瞬间 16 张并发请求 → 再加一层「最多 4 张并发」的加载队列 + 视口距离优先排序，
+      // 既避免带宽拥堵（手机加载慢/白屏的元凶），又保证视野中心的图最先浮现
+      const setupLazyImages = () => {
+        if (lazyIORef.current) { lazyIORef.current.disconnect(); lazyIORef.current = null; }
+        // 重置加载队列（画布每次打开都是全新状态）
+        loadQueueRef.current = { active: 0, pending: [] };
+        const cards = document.querySelectorAll('.ppt-canvas-grid .ppt-card');
+        // 降级兜底：不支持 IO 的老浏览器 → 直接全部加载（行为等同旧版）
+        if (!('IntersectionObserver' in window)) {
+          cards.forEach((card) => {
+            const img = card.querySelector('.ppt-card-img');
+            if (img && img.dataset.src && !img.getAttribute('src')) img.src = img.dataset.src;
+          });
+          return;
+        }
+
+        // —— 并发限制加载泵：从队列取图赋 src，同一时刻最多 MAX_IMG_PARALLEL 张在加载 ——
+        const pumpQueue = () => {
+          const q = loadQueueRef.current;
+          while (q.active < MAX_IMG_PARALLEL && q.pending.length > 0) {
+            const img = q.pending.shift();
+            // 画布已关闭的残留节点 / 已有 src 的节点直接跳过
+            if (!img || !img.isConnected || img.getAttribute('src')) continue;
+            q.active += 1;
+            const onSettled = () => { q.active -= 1; pumpQueue(); };
+            img.addEventListener('load', onSettled, { once: true });
+            img.addEventListener('error', onSettled, { once: true });
+            img.src = img.dataset.src;          // 此刻才真正发起网络请求
+          }
+        };
+
+        const io = new IntersectionObserver((entries) => {
+          const q = loadQueueRef.current;
+          const vw = stageRef.current ? stageRef.current.clientWidth : window.innerWidth;
+          const vh = stageRef.current ? stageRef.current.clientHeight : window.innerHeight;
+          const jobs = [];
+          entries.forEach((entry) => {
+            if (!entry.isIntersecting) return;
+            io.unobserve(entry.target);         // 触发过一次就不再观察
+            const img = entry.target.querySelector('.ppt-card-img');
+            if (img && img.dataset.src && !img.getAttribute('src')) {
+              // 记录卡片与视口中心的距离 → 越近的越先排队
+              const r = entry.boundingClientRect;
+              jobs.push({ img, dist: Math.hypot((r.left + r.width / 2) - vw / 2, (r.top + r.height / 2) - vh / 2) });
+            }
+          });
+          if (jobs.length === 0) return;
+          jobs.sort((a, b) => a.dist - b.dist); // 近 → 远
+          jobs.forEach((j) => q.pending.push(j.img));
+          pumpQueue();
+        }, {
+          root: stageRef.current,               // 以画布舞台为裁剪根（stage 是 overflow:hidden）
+          rootMargin: '180px',                  // 预载边距：滑动时图片已就位，不出现空白
+          threshold: 0,
+        });
+        cards.forEach((card) => io.observe(card));
+        lazyIORef.current = io;
       };
 
       const teardownCanvas = () => {
@@ -3528,6 +3624,9 @@
         document.removeEventListener('mouseup', onPointerUp);
         window.removeEventListener('resize', onResize);
         cancelAnimationFrame(rafRef.current);
+        // 断开懒加载观察器并清空加载队列
+        if (lazyIORef.current) { lazyIORef.current.disconnect(); lazyIORef.current = null; }
+        loadQueueRef.current = { active: 0, pending: [] };
       };
 
       const onResize = () => {
@@ -3544,6 +3643,8 @@
           const row = Math.floor(i / cols);
           m.baseX = paddingX + col * (cardW + gap);
           m.baseY = paddingY + row * (cardH + gap);
+          // 尺寸变化后立即重定位（tick 有脏检查，镜头不动时不会自动重写 transform）
+          m.node.style.transform = `translate(${m.baseX + cam.current.x + m.offX}px, ${m.baseY + cam.current.y + m.offY}px)`;
         });
       };
 
@@ -3651,6 +3752,15 @@
         if (Math.abs(wheelAcc.current.x) < 0.1) wheelAcc.current.x = 0;
         if (Math.abs(wheelAcc.current.y) < 0.1) wheelAcc.current.y = 0;
 
+        // —— 脏检查：镜头无位移时跳过下方 16 张卡片的 transform 写入 ——
+        // 移动端 rAF 空转时每帧省 16 次 style 写入 + 合成，显著降低耗电与发热
+        if (cam.current.x === tickPrev.current.x && cam.current.y === tickPrev.current.y) {
+          rafRef.current = requestAnimationFrame(tick);
+          return;
+        }
+        tickPrev.current.x = cam.current.x;
+        tickPrev.current.y = cam.current.y;
+
         // ========== 无限滚动核心逻辑（参考 JIEJOE 仓库：穿越边缘即复位偏移） ==========
         // 当某卡片 + 当前镜头 完全超出容器右边界 → 将其 baseX 减掉 1 个网格宽度（去左边）
         // 同理处理 4 个方向
@@ -3706,8 +3816,8 @@
         for (let i = 1; i <= TOTAL; i++) {
           const idx = String(i).padStart(2, '0');
           const [c1, c2] = workGradients[i - 1];
-          // 本地 PPT 缩略图（ppt-page1.png ~ ppt-page16.png）
-          const imgSrc = `ppt-page${i}.png`;
+          // 本地 PPT 缩略图（ppt-page1.webp ~ ppt-page16.webp，1280px/q80，比原 PNG 小 93%）
+          const imgSrc = `ppt-page${i}.webp`;
           arr.push(
             <div key={i} className="ppt-card" onClick={() => handleCardClick(imgSrc, workTitles[i - 1])}>
               {/* 彩色渐变兜底层（picsum 加载失败 / 断网时显示） */}
@@ -3718,13 +3828,25 @@
                 }}
                 aria-hidden
               />
-              {/* 真实图片层；加载失败时 onError 隐藏 → 显示下方渐变 + 标题占位 */}
+              {/* 真实图片层（懒加载）：初始无 src，由 IntersectionObserver 在卡片临近视口时
+                  把 data-src 赋给 src 才真正发请求；onLoad 淡入 / onError 退回渐变兜底 */}
               <img
                 className="ppt-card-img"
-                src={imgSrc}
+                data-src={imgSrc}
                 alt={workTitles[i - 1]}
                 loading="lazy"
-                onError={(e) => { e.currentTarget.style.opacity = '0'; }}
+                decoding="async"
+                draggable={false}
+                onLoad={(e) => {
+                  e.currentTarget.classList.add('is-loaded');
+                  const card = e.currentTarget.closest('.ppt-card');
+                  if (card) card.classList.add('img-done');   // 关闭骨架屏微光
+                }}
+                onError={(e) => {
+                  e.currentTarget.style.opacity = '0';        // 失败隐藏 → 显示渐变兜底层
+                  const card = e.currentTarget.closest('.ppt-card');
+                  if (card) card.classList.add('img-done');   // 失败同样停止微光动画
+                }}
               />
               {/* 序号徽章（左上角） */}
               <div className="ppt-card-badge-idx">{idx}</div>
@@ -3810,7 +3932,7 @@
                 {selectedPpt && (
                   <div className="ppt-detail-content" onClick={e => e.stopPropagation()}>
                     <button className="ppt-detail-close" onClick={() => setSelectedPpt(null)}>×</button>
-                    <img className="ppt-detail-img" src={selectedPpt.imgSrc} alt={selectedPpt.title} loading="lazy" />
+                    <img className="ppt-detail-img" src={selectedPpt.imgSrc} alt={selectedPpt.title} loading="eager" decoding="async" />
                     <div className="ppt-detail-title">{selectedPpt.title}</div>
                   </div>
                 )}
