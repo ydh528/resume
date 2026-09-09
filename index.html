@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+﻿﻿﻿﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
@@ -2725,6 +2725,43 @@
       .ppt-main-title { font-size: 1.6rem !important; }
       .hero-name { font-size: 2rem !important; }
       .ppt-grid { grid-template-columns: 1fr !important; } /* PPT 卡片也单列 */
+    }
+
+    /* ===== 打印样式：导出 PDF 用 ===== */
+    @media print {
+      /* 强制打印背景色/图片（简历深色主题必须） */
+      * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+      /* 隐藏非打印元素 */
+      .custom-cursor, .custom-cursor-dot,
+      .top-right-music-widget,
+      .ppt-canvas-overlay,
+      .game-modal-overlay, .video-modal-overlay,
+      .platform-modal-overlay, .workflow-image-overlay,
+      .cert-modal-overlay, .music-video-overlay,
+      .ppt-entry-hint,  /* PPT 入口按钮打印时隐藏，画布不适合 PDF */
+      .scroll-wrapper {
+        display: none !important;
+      }
+      /* 页面基础：白底黑字更适合打印阅读 */
+      html, body {
+        background: #fff !important;
+        color: #1a1a1a !important;
+      }
+      /* section 不跨页断裂 */
+      section, footer { break-inside: avoid; page-break-inside: avoid; }
+      /* 卡片不跨页 */
+      .project-card, .cert-card, .practice-item,
+      .ppt-card, .media-card, .advantage-card {
+        break-inside: avoid;
+        page-break-inside: avoid;
+      }
+      /* 打印时移除动画过渡，避免截图闪烁 */
+      * {
+        animation: none !important;
+        transition: none !important;
+      }
+      /* 隐藏滚动条装饰 */
+      ::-webkit-scrollbar { display: none; }
     }
   </style>
 </head>
