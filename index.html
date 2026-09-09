@@ -1861,23 +1861,6 @@
       color: #1a1a1a;
       text-align: center;
     }
-    .gratitude-text {
-      max-width: 720px;
-      margin: 1.5rem auto 2.5rem;
-      font-size: 1.05rem;
-      line-height: 2;
-      color: #3a3a3a;
-      text-align: justify;
-      letter-spacing: 0.02em;
-    }
-    #gratitude .media-grid {
-      grid-template-columns: 1fr;
-      max-width: 640px;
-      margin: 0 auto;
-    }
-    #gratitude .media-card-img {
-      aspect-ratio: 16 / 10;
-    }
     @media (max-width: 900px) {
       .media-grid { grid-template-columns: repeat(2, 1fr); }
       .message-board-container { grid-template-columns: 1fr; }
@@ -2375,10 +2358,6 @@
       .media-section { padding: 3rem 0; }
       .media-grid { grid-template-columns: repeat(2, 1fr); gap: 0.8rem; }
 
-      /* 鸣谢 */
-      .gratitude-section { padding: 3rem 0; }
-      .gratitude-text { font-size: 0.9rem; padding: 0 1rem; }
-
       /* 联系 */
       .contact-section { padding: 3rem 0; }
       .contact-list { flex-direction: column; gap: 1rem; }
@@ -2403,9 +2382,6 @@
 
       /* 工作流/平台弹窗内图片 */
       .workflow-image-item, .platform-modal-img { max-height: 60vh; }
-
-      /* 鸣谢卡片 */
-      .gratitude-card { max-width: 95vw; }
     }
 
     @media (max-width: 480px) {
@@ -2627,14 +2603,6 @@
         font-size: 0.8rem !important;
         padding: 0.4rem 0.5rem !important;
       }
-
-      /* ----- 特别鸣谢 ----- */
-      .gratitude-text {
-        font-size: 0.85rem !important;
-        padding: 0 0.2rem 1rem !important;
-        line-height: 1.75;
-      }
-      #gratitude .media-grid { max-width: 100% !important; }
 
       /* ----- 联系模块（表单 + 留言板） ----- */
       .message-board-container {
@@ -3987,48 +3955,6 @@
       );
     };
 
-    // ===== 特别鸣谢 =====
-    const GratitudeSection = () => {
-      const gratitudeItems = [
-        { title: '浪尖社区', img: 'img.jpg' },
-      ];
-
-      return (
-        <section id="gratitude" className="media-section">
-          <div className="section-inner">
-            <div className="ppt-kicker">
-              <span className="ppt-kicker-icon" aria-hidden />
-              <span>Gratitude</span>
-              <span className="ppt-kicker-slash">//</span>
-              <span className="ppt-kicker-cn">浪尖社区</span>
-            </div>
-            <h1 className="ppt-main-title">
-              特别鸣谢<span className="ppt-dot">。</span>
-            </h1>
-
-            <p className="gratitude-text">
-              从理性层面看，浪尖社区帮助我打破了大学的信息壁垒，免费上雅思直播课，还教我们如何用AI去做PPT、个人网站、音乐……而从感性层面看，在进入社区之后，感觉自己对未来大学四年有了更清晰的认识，身边有一群志同道合的人，让我对未来有了更多期许，所以在这里特别感谢浪尖社区！
-            </p>
-
-            <div className="media-grid">
-              {gratitudeItems.map((item, idx) => (
-                <div key={idx} className="media-card">
-                  <div className="media-card-img">
-                    {item.img ? (
-                      <img src={item.img} alt={item.title} loading="lazy" />
-                    ) : (
-                      <span className="media-card-placeholder">图片待补充</span>
-                    )}
-                  </div>
-                  <div className="media-card-title">{item.title}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </section>
-      );
-    };
-
     // ===== 底部联系 =====
     const ContactSection = () => {
       const [messages, setMessages] = useState([]);
@@ -4383,7 +4309,6 @@
         <Practice />
         <PptShowcase />
         <MediaSection />
-        <GratitudeSection />
         <ContactSection />
         <MusicPlayer />
         <CustomCursor />
